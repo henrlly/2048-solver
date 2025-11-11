@@ -1,6 +1,7 @@
 # 2048Solver
 [2048](https://play2048.co/) webapp and AI solver in Python
 
+Rewritten in Rust in the `rust` branch.
 
 ## Demo (not sped up)
 ![2048-demo](https://user-images.githubusercontent.com/80515759/222767967-dd664566-7852-4cd4-bebb-efd7890492e4.gif)
