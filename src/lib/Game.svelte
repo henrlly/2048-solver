@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { invoke } from "@tauri-apps/api/tauri";
+    import { invoke } from "@tauri-apps/api/core";
     import { onMount } from "svelte";
     import { CELL_BG_COLORS, CELL_TEXT_COLORS, decodeState } from "./utils";
 

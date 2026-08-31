@@ -74,7 +74,6 @@ const fn make_move_left_table() -> [u64; 65536] {
     table
 }
 
-
 const fn make_move_right_table() -> [u64; 65536] {
     let mut table = [0u64; 65536];
     const_for!(row in 0..65536 => {
@@ -225,7 +224,7 @@ pub fn spawn_new_random_tile(state: u64) -> u64 {
     let mut tile: u64 = if rand::random::<f32>() < 0.9 { 1 } else { 2 };
     let mut idx = rand::random::<u32>() % empty_count;
     let mut tmp = state;
-    while true {
+    loop {
         while (tmp & 0xF) != 0 {
             tmp >>= 4;
             tile <<= 4;
