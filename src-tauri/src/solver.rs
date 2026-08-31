@@ -2,14 +2,36 @@ use const_for::const_for;
 
 use super::game;
 
-use once_cell::sync::Lazy;
+use rayon::prelude::*;
+use std::cell::RefCell;
 use std::collections::HashMap;
 
-static mut CACHE: Lazy<HashMap<u64, (f64, u8)>> = Lazy::new(|| HashMap::new());
+// Per-thread transposition table. Rayon's worker threads are long-lived, so each
+// worker keeps its cache warm across `find_best_move` calls without any locking
+// in the hot path.
+thread_local! {
+    static CACHE: RefCell<HashMap<u64, (f64, u8)>> = RefCell::new(HashMap::new());
+}
+
+#[inline]
+fn cache_get(state: u64) -> Option<(f64, u8)> {
+    CACHE.with(|c| c.borrow().get(&state).copied())
+}
+
+#[inline]
+fn cache_put(state: u64, score: f64, depth: u8) {
+    CACHE.with(|c| {
+        c.borrow_mut().insert(state, (score, depth));
+    });
+}
 
 static DEPTH_MIN: u8 = 3;
 static DEPTH_MAX: u8 = 6;
 static DEPTH_DISCOUNT: u8 = 5;
+
+// Chance nodes at this depth or shallower expand their children in parallel;
+// deeper nodes recurse serially so task granularity stays coarse.
+static PARALLEL_DEPTH: u8 = 0;
 
 pub static SCORE_MONOTONE_POWER: i32 = 4; // must be odd to keep sign after raising to power
 pub static SCORE_MONOTONE_WEIGHT: i32 = 47;
@@ -157,48 +179,48 @@ pub fn score_post_spawn(state: u64, depth: u8, depth_limit: u8, cprob: f32) -> f
 }
 
 pub fn score_pre_spawn(state: u64, depth: u8, depth_limit: u8, cprob: f32) -> f64 {
-    unsafe {
-        // let mut cache = CACHE.lock().unwrap();
-        let minprob: f32 = f32::max(0.0001, 1.0 / ((1 << (2 * depth + 4)) as f32));
-        if cprob < minprob || depth >= depth_limit {
-            if let Some((cached_score, cached_depth)) = CACHE.get(&state) {
-                if *cached_depth >= depth {
-                    return *cached_score;
-                }
-            }
-            return score_position(state) as f64;
-        }
-
-        if let Some((cached_score, cached_depth)) = CACHE.get(&state) {
-            if *cached_depth >= depth {
-                return *cached_score;
+    let minprob: f32 = f32::max(0.0001, 1.0 / ((1 << (2 * depth + 4)) as f32));
+    if cprob < minprob || depth >= depth_limit {
+        if let Some((cached_score, cached_depth)) = cache_get(state) {
+            if cached_depth >= depth {
+                return cached_score;
             }
         }
-
-        let count = game::count_empty(state);
-        let cprob = cprob / count as f32;
-
-        let mut tile = 1;
-        let mut temp = state;
-        let mut res = 0.0;
-        while tile & 0xFFFF_FFFF_FFFF_FFFF != 0 {
-            if temp & 0xf == 0 {
-                res += score_post_spawn(state | tile, depth, depth_limit, cprob * 0.9) * 0.9;
-                res += score_post_spawn(state | (tile << 1), depth, depth_limit, cprob * 0.1) * 0.1;
-            }
-            tile <<= 4;
-            temp >>= 4;
-        }
-        let result = (res as f64) / count as f64;
-        CACHE.insert(state, (result, depth));
-        result
+        return score_position(state) as f64;
     }
+
+    if let Some((cached_score, cached_depth)) = cache_get(state) {
+        if cached_depth >= depth {
+            return cached_score;
+        }
+    }
+
+    let count = game::count_empty(state);
+    let cprob = cprob / count as f32;
+
+    // Nibble offsets of the empty cells; one chance-node child per (cell, tile).
+    let empty_shifts: Vec<u32> = (0..16u32)
+        .filter(|&i| state & (0xF << (i * 4)) == 0)
+        .collect();
+
+    let expand = |&shift: &u32| -> f64 {
+        let tile: u64 = 1 << (shift * 4);
+        score_post_spawn(state | tile, depth, depth_limit, cprob * 0.9) * 0.9
+            + score_post_spawn(state | (tile << 1), depth, depth_limit, cprob * 0.1) * 0.1
+    };
+
+    let res: f64 = if depth <= PARALLEL_DEPTH {
+        empty_shifts.par_iter().map(expand).sum()
+    } else {
+        empty_shifts.iter().map(expand).sum()
+    };
+
+    let result = res / count as f64;
+    cache_put(state, result, depth);
+    result
 }
 
 pub fn find_best_move(state: u64) -> (String, f64) {
-    let mut best_move: &str = "";
-    let mut best_score: f64 = f64::MIN;
-
     let moves = [
         ("up", game::move_up(state)),
         ("down", game::move_down(state)),
@@ -214,9 +236,24 @@ pub fn find_best_move(state: u64) -> (String, f64) {
         ) as u8,
     );
 
-    for (mv, new_state) in moves.iter() {
-        if *new_state != state {
-            let score = score_pre_spawn(*new_state, 0, depth_limit, 1.0);
+    // Score the (up to 4) legal root moves in parallel. `collect` on an indexed
+    // parallel iterator preserves order, so the tie-break below is identical to
+    // the original serial scan (up > down > left > right).
+    let scores: Vec<Option<f64>> = moves
+        .par_iter()
+        .map(|(_mv, new_state)| {
+            if *new_state != state {
+                Some(score_pre_spawn(*new_state, 0, depth_limit, 1.0))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let mut best_move: &str = "";
+    let mut best_score: f64 = f64::MIN;
+    for ((mv, _), score) in moves.iter().zip(scores) {
+        if let Some(score) = score {
             if best_score == 0.0 || score > best_score {
                 best_score = score;
                 best_move = *mv;
