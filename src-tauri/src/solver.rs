@@ -254,7 +254,7 @@ pub fn find_best_move(state: u64) -> (String, f64) {
     let mut best_score: f64 = f64::MIN;
     for ((mv, _), score) in moves.iter().zip(scores) {
         if let Some(score) = score {
-            if best_score == 0.0 || score > best_score {
+            if score > best_score {
                 best_score = score;
                 best_move = *mv;
             }

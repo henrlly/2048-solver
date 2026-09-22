@@ -6,7 +6,6 @@ export function decodeState(state: bigint) {
   for (let i = 0; i < 16; i++) {
     array[i] = Number((state >> BigInt(4 * i)) & 0xfn);
   }
-  console.log(array);
   return array;
 }
 

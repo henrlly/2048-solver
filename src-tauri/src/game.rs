@@ -135,7 +135,6 @@ pub const fn game_score_horizontal(state: u64) -> u64 {
         + GAME_SCORE_TABLE[row1]
         + GAME_SCORE_TABLE[row2]
         + GAME_SCORE_TABLE[row3]
-        + game_score_vertical(state)
 }
 
 pub const fn move_left(state: u64) -> u64 {
